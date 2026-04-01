@@ -1,0 +1,10 @@
+{
+  "ide": {
+    "command": "code",
+    "args": ["-r"]
+  },
+  "paths": [
+    "~/projects",
+    "~/projects/modusign/agentic-sd-clm/worktrees"
+  ]
+}

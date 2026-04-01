@@ -1,0 +1,8 @@
+{
+  "name": "dailylife-utils",
+  "private": true,
+  "type": "module",
+  "workspaces": [
+    "apps/*"
+  ]
+}
