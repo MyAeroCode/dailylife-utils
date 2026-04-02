@@ -14,6 +14,7 @@ const APP_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..")
 const DEFAULT_CONFIG_PATH = path.join(APP_DIR, "config", "repo-paths.json");
 const SELECTION_FILE_ENV = "REPO_SELECTED_PATH_FILE";
 const DELETE_WORKER_COMMAND = "delete-worker";
+const PINNED_PATH = path.join(APP_DIR, "config", "pinned.json");
 const ARCHIVED_CACHE_PATH = path.join(os.tmpdir(), "repo-archived-cache.json");
 const ARCHIVED_CACHE_TTL_MS = 60 * 60 * 1000;
 const DISPLAY_PATH_PREFIXES = [
@@ -27,6 +28,7 @@ const HANGUL_COMMAND_KEY_ALIASES = {
   "ㅓ": "j",
   "ㅐ": "o",
   "ㅒ": "O",
+  "ㅔ": "p",
   "ㅍ": "v",
   "ㅎ": "g",
 };
@@ -98,7 +100,8 @@ function main() {
 
   const configPath = parsed.flags.config ? resolvePath(parsed.flags.config) : DEFAULT_CONFIG_PATH;
   const config = loadConfig(configPath);
-  const repos = discoverRepos(config.paths);
+  const pinnedSlugs = loadPinnedSlugs();
+  const repos = sortWithPinned(discoverRepos(config.paths), pinnedSlugs);
   applyArchivedStatus(repos);
   const filtered = filterRepos(repos, parsed.flags.query);
 
@@ -113,7 +116,7 @@ function main() {
     process.exit(selected ? 0 : 1);
   }
 
-  runInteractiveSelector(repos, parsed.flags.query, config.ide)
+  runInteractiveSelector(repos, parsed.flags.query, config.ide, pinnedSlugs)
     .then((selected) => {
       if (!selected) {
         process.exit(1);
@@ -260,6 +263,45 @@ function discoverRepos(rootPaths) {
   return Array.from(repos.values()).sort((left, right) => {
     const byPath = left.path.localeCompare(right.path);
     return byPath !== 0 ? byPath : left.name.localeCompare(right.name);
+  });
+}
+
+function loadPinnedSlugs() {
+  try {
+    const raw = fs.readFileSync(PINNED_PATH, "utf8");
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed) ? new Set(parsed) : new Set();
+  } catch {
+    return new Set();
+  }
+}
+
+function savePinnedSlugs(pinnedSet) {
+  fs.writeFileSync(PINNED_PATH, JSON.stringify([...pinnedSet], null, 2) + "\n", "utf8");
+}
+
+function isRepoPinned(repo, pinnedSet) {
+  if (isWorktreeRepo(repo)) {
+    const parentSlug = getWorktreeParentSlug(repo);
+    return parentSlug ? pinnedSet.has(parentSlug) : false;
+  }
+  return pinnedSet.has(repo.slug);
+}
+
+function getWorktreeParentSlug(repo) {
+  const parentOrigin = readGitOrigin(repo.gitCommonDir);
+  return isGitHubOrigin(parentOrigin) ? extractGitHubSlug(parentOrigin) : null;
+}
+
+function sortWithPinned(repos, pinnedSet) {
+  return [...repos].sort((a, b) => {
+    const aPinned = isRepoPinned(a, pinnedSet);
+    const bPinned = isRepoPinned(b, pinnedSet);
+    if (aPinned !== bPinned) {
+      return aPinned ? -1 : 1;
+    }
+    const byPath = a.path.localeCompare(b.path);
+    return byPath !== 0 ? byPath : a.name.localeCompare(b.name);
   });
 }
 
@@ -582,7 +624,7 @@ function renderSelection(selected, flags) {
   finalizeSelection(selected, { suppressStdout: Boolean(process.env[SELECTION_FILE_ENV]) });
 }
 
-async function runInteractiveSelector(initialRepos, initialQuery = "", ideConfig = null) {
+async function runInteractiveSelector(initialRepos, initialQuery = "", ideConfig = null, pinnedSlugs = new Set()) {
   if (initialRepos.length === 0) {
     throw new Error("no GitHub repositories found");
   }
@@ -616,14 +658,14 @@ async function runInteractiveSelector(initialRepos, initialQuery = "", ideConfig
     const visible = repos.slice(start, start + visibleCount);
     const header = [
       `${ANSI.bold}Select a repository${ANSI.reset}`,
-      `${ANSI.fgMuted}Vim keys:${ANSI.reset} ${ANSI.bold}j${ANSI.reset}/${ANSI.bold}k${ANSI.reset} ${ANSI.fgMuted}move,${ANSI.reset} ${ANSI.bold}gg${ANSI.reset}/${ANSI.bold}G${ANSI.reset} ${ANSI.fgMuted}top/bottom,${ANSI.reset} ${ANSI.bold}o${ANSI.reset} ${ANSI.fgMuted}actions,${ANSI.reset} ${ANSI.bold}:V${ANSI.reset} ${ANSI.fgMuted}visual range,${ANSI.reset} ${ANSI.bold}:d${ANSI.reset} ${ANSI.fgMuted}remove,${ANSI.reset} ${ANSI.bold}:q${ANSI.reset} ${ANSI.fgMuted}quit,${ANSI.reset} ${ANSI.bold}Esc${ANSI.reset} ${ANSI.fgMuted}cancel only.${ANSI.reset}`,
+      `${ANSI.fgMuted}Vim keys:${ANSI.reset} ${ANSI.bold}j${ANSI.reset}/${ANSI.bold}k${ANSI.reset} ${ANSI.fgMuted}move,${ANSI.reset} ${ANSI.bold}gg${ANSI.reset}/${ANSI.bold}G${ANSI.reset} ${ANSI.fgMuted}top/bottom,${ANSI.reset} ${ANSI.bold}o${ANSI.reset} ${ANSI.fgMuted}actions,${ANSI.reset} ${ANSI.bold}p${ANSI.reset} ${ANSI.fgMuted}pin,${ANSI.reset} ${ANSI.bold}:V${ANSI.reset} ${ANSI.fgMuted}visual range,${ANSI.reset} ${ANSI.bold}:d${ANSI.reset} ${ANSI.fgMuted}remove,${ANSI.reset} ${ANSI.bold}:q${ANSI.reset} ${ANSI.fgMuted}quit,${ANSI.reset} ${ANSI.bold}Esc${ANSI.reset} ${ANSI.fgMuted}cancel only.${ANSI.reset}`,
       renderControlLine(query, searchMode, repos.length, commandQuery, commandMode, process.stdout.columns || 120),
       renderStatusLine(repos, cursor, visualAnchor, confirmDelete, statusMessage, process.stdout.columns || 120),
       "",
     ];
     const body = repos.length === 0
       ? [`${ANSI.fgMuted}  No matching repositories.${ANSI.reset}`]
-      : renderInteractiveRows(allRepos, visible, start, cursor, visualAnchor, process.stdout.columns || 120);
+      : renderInteractiveRows(allRepos, visible, start, cursor, visualAnchor, pinnedSlugs, process.stdout.columns || 120);
 
     process.stdout.write("\x1Bc");
     process.stdout.write(`${header.concat(body).join("\n")}\n`);
@@ -933,6 +975,31 @@ async function runInteractiveSelector(initialRepos, initialQuery = "", ideConfig
         actionMenuOpen = true;
         actionMenuCursor = 0;
         statusMessage = "";
+        pendingKey = "";
+        redraw();
+        return;
+      }
+
+      if (normalizedInput === "p") {
+        const target = repos[cursor];
+        if (!target || isWorktreeRepo(target)) {
+          statusMessage = isWorktreeRepo(target) ? "pin is only for repositories" : "";
+          pendingKey = "";
+          redraw();
+          return;
+        }
+
+        if (pinnedSlugs.has(target.slug)) {
+          pinnedSlugs.delete(target.slug);
+          statusMessage = `Unpinned ${target.name}`;
+        } else {
+          pinnedSlugs.add(target.slug);
+          statusMessage = `Pinned ${target.name}`;
+        }
+        savePinnedSlugs(pinnedSlugs);
+        allRepos = sortWithPinned(allRepos, pinnedSlugs);
+        updateFilteredRepos();
+        cursor = Math.max(0, repos.findIndex((r) => r.path === target.path));
         pendingKey = "";
         redraw();
         return;
@@ -1269,8 +1336,9 @@ function parseCommand(commandQuery, repos, cursor, visualAnchor) {
   return null;
 }
 
-function renderInteractiveRows(allRepos, repos, start, cursor, visualAnchor, terminalWidth) {
+function renderInteractiveRows(allRepos, repos, start, cursor, visualAnchor, pinnedSlugs, terminalWidth) {
   const contentWidth = Math.max(40, terminalWidth);
+  const pinMarkWidth = 2;
   const indexWidth = 4;
   const minNameWidth = 12;
   const minRefWidth = 3;
@@ -1285,16 +1353,18 @@ function renderInteractiveRows(allRepos, repos, start, cursor, visualAnchor, ter
   const fullBranchWidth = allRepos.reduce((max, repo) => Math.max(max, stringDisplayWidth(repo.branch)), 6);
   const typeWidth = Math.max(8, allRepos.reduce((max, repo) => Math.max(max, stringDisplayWidth(getRepoTypeLabel(repo))), 4));
   const refWidth = Math.max(minRefWidth, fullRefWidth);
-  const reservedWidth = leftPadding + indexWidth + gapAfterIndex + primaryGap + secondaryGap + tertiaryGap + typeWidth + refWidth;
+  const reservedWidth = leftPadding + pinMarkWidth + indexWidth + gapAfterIndex + primaryGap + secondaryGap + tertiaryGap + typeWidth + refWidth;
   const availableWidth = Math.max(minNameWidth + minBranchWidth, contentWidth - reservedWidth);
   const preferredNameWidth = Math.min(fullNameWidth, Math.max(minNameWidth, availableWidth - minBranchWidth));
   const branchWidth = Math.max(minBranchWidth, availableWidth - preferredNameWidth);
   const nameWidth = Math.max(minNameWidth, availableWidth - branchWidth);
-  const headerRow = `${ANSI.dim}  ${padCell("#", indexWidth, "left")} ${padCell("NAME", nameWidth)}${" ".repeat(primaryGap)}${padCell("TYPE", typeWidth)}${" ".repeat(secondaryGap)}${padCell("REF", refWidth)}${" ".repeat(tertiaryGap)}${padCell("BRANCH", branchWidth)}${ANSI.reset}`;
+  const headerRow = `${ANSI.dim}  ${" ".repeat(pinMarkWidth)}${padCell("#", indexWidth, "left")} ${padCell("NAME", nameWidth)}${" ".repeat(primaryGap)}${padCell("TYPE", typeWidth)}${" ".repeat(secondaryGap)}${padCell("REF", refWidth)}${" ".repeat(tertiaryGap)}${padCell("BRANCH", branchWidth)}${ANSI.reset}`;
   const bodyRows = repos.map((repo, index) => {
     const actualIndex = start + index;
     const focused = actualIndex === cursor;
     const selected = isSelectedIndex(actualIndex, cursor, visualAnchor);
+    const pinned = isRepoPinned(repo, pinnedSlugs);
+    const pinMark = pinned ? `${ANSI.fgAccent}◆${ANSI.reset}` : " ";
     const stylePrefix = focused
       ? `${ANSI.bgFocus}${ANSI.fgFocus}`
       : selected
@@ -1308,9 +1378,9 @@ function renderInteractiveRows(allRepos, repos, start, cursor, visualAnchor, ter
     const typeCell = padCell(getRepoTypeLabel(repo), typeWidth);
     const refCell = padCell(getRepoRefLabel(repo), refWidth);
     const branchCell = padCell(repo.branch, branchWidth);
-    const row = `  ${indexCell} ${nameCell}${" ".repeat(primaryGap)}${typeCell}${" ".repeat(secondaryGap)}${refCell}${" ".repeat(tertiaryGap)}${branchCell}`;
+    const row = `${stylePrefix} ${styleSuffix}${pinMark}${stylePrefix} ${indexCell} ${nameCell}${" ".repeat(primaryGap)}${typeCell}${" ".repeat(secondaryGap)}${refCell}${" ".repeat(tertiaryGap)}${branchCell}${styleSuffix}`;
 
-    return `${stylePrefix}${row}${styleSuffix}`;
+    return row;
   });
 
   return [headerRow, ...bodyRows];
