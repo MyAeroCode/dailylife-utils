@@ -14,6 +14,8 @@ const APP_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..")
 const DEFAULT_CONFIG_PATH = path.join(APP_DIR, "config", "repo-paths.json");
 const SELECTION_FILE_ENV = "REPO_SELECTED_PATH_FILE";
 const DELETE_WORKER_COMMAND = "delete-worker";
+const ARCHIVED_CACHE_PATH = path.join(os.tmpdir(), "repo-archived-cache.json");
+const ARCHIVED_CACHE_TTL_MS = 60 * 60 * 1000;
 const DISPLAY_PATH_PREFIXES = [
   path.join(os.homedir(), "projects") + path.sep,
 ];
@@ -97,6 +99,7 @@ function main() {
   const configPath = parsed.flags.config ? resolvePath(parsed.flags.config) : DEFAULT_CONFIG_PATH;
   const config = loadConfig(configPath);
   const repos = discoverRepos(config.paths);
+  applyArchivedStatus(repos);
   const filtered = filterRepos(repos, parsed.flags.query);
 
   if (parsed.command === "list") {
@@ -258,6 +261,107 @@ function discoverRepos(rootPaths) {
     const byPath = left.path.localeCompare(right.path);
     return byPath !== 0 ? byPath : left.name.localeCompare(right.name);
   });
+}
+
+function applyArchivedStatus(repos) {
+  const slugs = [...new Set(repos.map((repo) => repo.slug).filter(Boolean))];
+  if (slugs.length === 0) {
+    return;
+  }
+
+  const archivedSet = fetchArchivedSlugs(slugs);
+  for (const repo of repos) {
+    repo.archived = archivedSet.has(repo.slug);
+  }
+}
+
+function fetchArchivedSlugs(slugs) {
+  const cached = readArchivedCache();
+  if (cached && isCacheValid(cached, slugs)) {
+    return new Set(slugs.filter((slug) => cached.data[slug] === true));
+  }
+
+  const freshData = queryArchivedFromGitHub(slugs);
+  writeArchivedCache(slugs, freshData);
+  return new Set(slugs.filter((slug) => freshData[slug] === true));
+}
+
+function readArchivedCache() {
+  try {
+    const raw = fs.readFileSync(ARCHIVED_CACHE_PATH, "utf8");
+    return JSON.parse(raw);
+  } catch {
+    return null;
+  }
+}
+
+function isCacheValid(cached, slugs) {
+  if (!cached || !cached.timestamp || !cached.data) {
+    return false;
+  }
+  if (Date.now() - cached.timestamp > ARCHIVED_CACHE_TTL_MS) {
+    return false;
+  }
+  return slugs.every((slug) => slug in cached.data);
+}
+
+function writeArchivedCache(slugs, data) {
+  try {
+    const existing = readArchivedCache();
+    const merged = existing && existing.data ? { ...existing.data, ...data } : { ...data };
+    fs.writeFileSync(ARCHIVED_CACHE_PATH, JSON.stringify({ timestamp: Date.now(), data: merged }), "utf8");
+  } catch {
+    // ignore cache write failures
+  }
+}
+
+function queryArchivedFromGitHub(slugs) {
+  const result = {};
+  const batchSize = 50;
+
+  for (let i = 0; i < slugs.length; i += batchSize) {
+    const batch = slugs.slice(i, i + batchSize);
+    const aliases = batch.map((slug, index) => {
+      const [owner, name] = slug.split("/");
+      if (!owner || !name) {
+        return "";
+      }
+      return `r${index}: repository(owner: ${JSON.stringify(owner)}, name: ${JSON.stringify(name)}) { isArchived }`;
+    }).filter(Boolean);
+
+    if (aliases.length === 0) {
+      continue;
+    }
+
+    const query = `{ ${aliases.join("\n")} }`;
+    try {
+      const ghResult = spawnSync("gh", ["api", "graphql", "-f", `query=${query}`], {
+        encoding: "utf8",
+        stdio: ["ignore", "pipe", "pipe"],
+        timeout: 10000,
+      });
+
+      if (ghResult.error || ghResult.status !== 0) {
+        for (const slug of batch) {
+          result[slug] = false;
+        }
+        continue;
+      }
+
+      const parsed = JSON.parse(ghResult.stdout);
+      const data = parsed.data || {};
+      for (let j = 0; j < batch.length; j++) {
+        const entry = data[`r${j}`];
+        result[batch[j]] = entry ? entry.isArchived === true : false;
+      }
+    } catch {
+      for (const slug of batch) {
+        result[slug] = false;
+      }
+    }
+  }
+
+  return result;
 }
 
 function walkForRepos(currentPath, repos) {
@@ -1195,7 +1299,9 @@ function renderInteractiveRows(allRepos, repos, start, cursor, visualAnchor, ter
       ? `${ANSI.bgFocus}${ANSI.fgFocus}`
       : selected
         ? `${ANSI.bgSelection}${ANSI.fgSelection}`
-        : "";
+        : repo.archived
+          ? ANSI.dim
+          : "";
     const styleSuffix = stylePrefix ? ANSI.reset : "";
     const indexCell = padCell(String(actualIndex + 1), indexWidth, "left");
     const nameCell = padCell(repo.name, nameWidth);
@@ -1211,6 +1317,9 @@ function renderInteractiveRows(allRepos, repos, start, cursor, visualAnchor, ter
 }
 
 function getRepoTypeLabel(repo) {
+  if (repo.archived) {
+    return isWorktreeRepo(repo) ? "wt·arch" : "archived";
+  }
   return isWorktreeRepo(repo) ? "worktree" : "repo";
 }
 
