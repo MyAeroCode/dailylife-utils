@@ -1372,16 +1372,14 @@ function renderInteractiveRows(allRepos, repos, start, cursor, visualAnchor, pin
           ? ANSI.dim
           : "";
     const hasBg = Boolean(bgStyle);
-    const pinMark = pinned
-      ? (hasBg ? `${ANSI.fgAccent}◆${ANSI.reset}${bgStyle}` : `${ANSI.fgAccent}◆${ANSI.reset}`)
-      : " ";
+    const pinMark = pinned ? "◆" : " ";
     const styleSuffix = hasBg ? ANSI.reset : "";
     const indexCell = padCell(String(actualIndex + 1), indexWidth, "left");
     const nameCell = padCell(repo.name, nameWidth);
     const typeCell = padCell(getRepoTypeLabel(repo), typeWidth);
     const refCell = padCell(getRepoRefLabel(repo), refWidth);
     const branchCell = padCell(repo.branch, branchWidth);
-    const row = `${bgStyle} ${pinMark}${hasBg && !pinned ? "" : bgStyle} ${indexCell} ${nameCell}${" ".repeat(primaryGap)}${typeCell}${" ".repeat(secondaryGap)}${refCell}${" ".repeat(tertiaryGap)}${branchCell}${styleSuffix}`;
+    const row = `${bgStyle} ${pinMark} ${indexCell} ${nameCell}${" ".repeat(primaryGap)}${typeCell}${" ".repeat(secondaryGap)}${refCell}${" ".repeat(tertiaryGap)}${branchCell}${styleSuffix}`;
 
     return row;
   });
