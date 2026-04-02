@@ -28,6 +28,13 @@ const HANGUL_COMMAND_KEY_ALIASES = {
   "ㅍ": "v",
   "ㅎ": "g",
 };
+const ACTION_MENU_ITEMS = [
+  { key: "i", label: "IDE", description: "Open in IDE" },
+  { key: "c", label: "Claude Code", description: "Open in Claude Code" },
+  { key: "x", label: "Codex", description: "Open in Codex" },
+  { key: "g", label: "GitHub", description: "Open GitHub repository" },
+  { key: "p", label: "PR", description: "Open GitHub pull requests" },
+];
 const ANSI = {
   reset: "\x1b[0m",
   dim: "\x1b[2m",
@@ -487,6 +494,8 @@ async function runInteractiveSelector(initialRepos, initialQuery = "", ideConfig
   let pendingKey = "";
   let visualAnchor = null;
   let statusMessage = "";
+  let actionMenuOpen = false;
+  let actionMenuCursor = 0;
   readline.emitKeypressEvents(process.stdin);
   process.stdin.setRawMode(true);
   process.stdin.resume();
@@ -503,7 +512,7 @@ async function runInteractiveSelector(initialRepos, initialQuery = "", ideConfig
     const visible = repos.slice(start, start + visibleCount);
     const header = [
       `${ANSI.bold}Select a repository${ANSI.reset}`,
-      `${ANSI.fgMuted}Vim keys:${ANSI.reset} ${ANSI.bold}j${ANSI.reset}/${ANSI.bold}k${ANSI.reset} ${ANSI.fgMuted}move,${ANSI.reset} ${ANSI.bold}gg${ANSI.reset}/${ANSI.bold}G${ANSI.reset} ${ANSI.fgMuted}top/bottom,${ANSI.reset} ${ANSI.bold}o${ANSI.reset} ${ANSI.fgMuted}open IDE,${ANSI.reset} ${ANSI.bold}:V${ANSI.reset} ${ANSI.fgMuted}visual range,${ANSI.reset} ${ANSI.bold}:d${ANSI.reset} ${ANSI.fgMuted}remove,${ANSI.reset} ${ANSI.bold}:q${ANSI.reset} ${ANSI.fgMuted}quit,${ANSI.reset} ${ANSI.bold}Esc${ANSI.reset} ${ANSI.fgMuted}cancel only.${ANSI.reset}`,
+      `${ANSI.fgMuted}Vim keys:${ANSI.reset} ${ANSI.bold}j${ANSI.reset}/${ANSI.bold}k${ANSI.reset} ${ANSI.fgMuted}move,${ANSI.reset} ${ANSI.bold}gg${ANSI.reset}/${ANSI.bold}G${ANSI.reset} ${ANSI.fgMuted}top/bottom,${ANSI.reset} ${ANSI.bold}o${ANSI.reset} ${ANSI.fgMuted}actions,${ANSI.reset} ${ANSI.bold}:V${ANSI.reset} ${ANSI.fgMuted}visual range,${ANSI.reset} ${ANSI.bold}:d${ANSI.reset} ${ANSI.fgMuted}remove,${ANSI.reset} ${ANSI.bold}:q${ANSI.reset} ${ANSI.fgMuted}quit,${ANSI.reset} ${ANSI.bold}Esc${ANSI.reset} ${ANSI.fgMuted}cancel only.${ANSI.reset}`,
       renderControlLine(query, searchMode, repos.length, commandQuery, commandMode, process.stdout.columns || 120),
       renderStatusLine(repos, cursor, visualAnchor, confirmDelete, statusMessage, process.stdout.columns || 120),
       "",
@@ -514,6 +523,14 @@ async function runInteractiveSelector(initialRepos, initialQuery = "", ideConfig
 
     process.stdout.write("\x1Bc");
     process.stdout.write(`${header.concat(body).join("\n")}\n`);
+
+    if (actionMenuOpen) {
+      process.stdout.write(renderActionMenuPopup(rows, process.stdout.columns || 120, actionMenuCursor));
+    }
+
+    if (confirmDelete && confirmDelete.targets.length > 0) {
+      process.stdout.write(renderConfirmDeletePopup(confirmDelete, rows, process.stdout.columns || 120));
+    }
   };
 
   updateFilteredRepos();
@@ -524,36 +541,120 @@ async function runInteractiveSelector(initialRepos, initialQuery = "", ideConfig
       const normalizedInput = normalizeCommandInput(input);
 
       if (confirmDelete) {
-        if (key.name === "escape") {
+        if (key.name === "escape" || normalizedInput === "n") {
           confirmDelete = null;
           statusMessage = "";
           redraw();
           return;
         }
 
-        if (key.name === "backspace" || key.name === "return") {
-          const targets = confirmDelete.targets;
-          confirmDelete = null;
-          statusMessage = "";
+        if (normalizedInput === "h" || key.name === "left") {
+          confirmDelete.selected = confirmDelete.selected === 0 ? 1 : 0;
+          redraw();
+          return;
+        }
 
-          if (targets.length === 0) {
-            redraw();
-            return;
-          }
+        if (normalizedInput === "l" || key.name === "right") {
+          confirmDelete.selected = confirmDelete.selected === 1 ? 0 : 1;
+          redraw();
+          return;
+        }
 
-          try {
-            scheduleRepoRemoval(targets);
-            const removedPaths = new Set(targets.map((repo) => repo.path));
-            allRepos = allRepos.filter((repo) => !removedPaths.has(repo.path));
-            updateFilteredRepos();
-            visualAnchor = null;
-            statusMessage = `Removing ${targets.length} item${targets.length === 1 ? "" : "s"} in background`;
-          } catch (error) {
-            statusMessage = error.message;
+        if (normalizedInput === "y") {
+          confirmDelete.selected = 1;
+          redraw();
+          return;
+        }
+
+        if (key.name === "return") {
+          if (confirmDelete.selected === 1) {
+            const targets = confirmDelete.targets;
+            confirmDelete = null;
+            statusMessage = "";
+
+            if (targets.length === 0) {
+              redraw();
+              return;
+            }
+
+            try {
+              scheduleRepoRemoval(targets);
+              const removedPaths = new Set(targets.map((repo) => repo.path));
+              allRepos = allRepos.filter((repo) => !removedPaths.has(repo.path));
+              updateFilteredRepos();
+              visualAnchor = null;
+              statusMessage = `Removing ${targets.length} item${targets.length === 1 ? "" : "s"} in background`;
+            } catch (error) {
+              statusMessage = error.message;
+            }
+          } else {
+            confirmDelete = null;
+            statusMessage = "";
           }
 
           redraw();
         }
+        return;
+      }
+
+      if (actionMenuOpen) {
+        if (key.name === "escape") {
+          actionMenuOpen = false;
+          redraw();
+          return;
+        }
+
+        if (normalizedInput === "j" || key.name === "down") {
+          actionMenuCursor = actionMenuCursor >= ACTION_MENU_ITEMS.length - 1 ? 0 : actionMenuCursor + 1;
+          redraw();
+          return;
+        }
+
+        if (normalizedInput === "k" || key.name === "up") {
+          actionMenuCursor = actionMenuCursor <= 0 ? ACTION_MENU_ITEMS.length - 1 : actionMenuCursor - 1;
+          redraw();
+          return;
+        }
+
+        const target = repos[cursor];
+        if (!target) {
+          actionMenuOpen = false;
+          redraw();
+          return;
+        }
+
+        let actionKey = normalizedInput?.toLowerCase();
+        if (key.name === "return") {
+          actionKey = ACTION_MENU_ITEMS[actionMenuCursor].key;
+        }
+
+        try {
+          if (actionKey === "i") {
+            openRepoInIde(target, ideConfig);
+            statusMessage = ideConfig
+              ? `Opened ${target.name} in ${ideConfig.command}`
+              : "IDE is not configured";
+          } else if (actionKey === "c") {
+            openInCmuxSurface("claude", target.path);
+            statusMessage = `Opened Claude Code for ${target.name}`;
+          } else if (actionKey === "x") {
+            openInCmuxSurface("codex", target.path);
+            statusMessage = `Opened Codex for ${target.name}`;
+          } else if (actionKey === "g") {
+            openInBrowser(`https://github.com/${target.slug}`);
+            statusMessage = `Opened GitHub for ${target.name}`;
+          } else if (actionKey === "p") {
+            openInBrowser(`https://github.com/${target.slug}/pulls`);
+            statusMessage = `Opened GitHub PRs for ${target.name}`;
+          } else {
+            return;
+          }
+        } catch (error) {
+          statusMessage = error.message;
+        }
+
+        actionMenuOpen = false;
+        redraw();
         return;
       }
 
@@ -681,7 +782,7 @@ async function runInteractiveSelector(initialRepos, initialQuery = "", ideConfig
       if (visualAnchor != null && normalizedInput === "d") {
         const targets = getSelectedRepos(repos, cursor, visualAnchor);
         if (targets.length > 0) {
-          confirmDelete = { targets };
+          confirmDelete = { targets, selected: 0 };
           statusMessage = "";
           redraw();
         }
@@ -725,15 +826,9 @@ async function runInteractiveSelector(initialRepos, initialQuery = "", ideConfig
         if (!target) {
           return;
         }
-
-        try {
-          openRepoInIde(target, ideConfig);
-          statusMessage = ideConfig
-            ? `Opened ${target.name} in ${ideConfig.command}`
-            : "IDE is not configured";
-        } catch (error) {
-          statusMessage = error.message;
-        }
+        actionMenuOpen = true;
+        actionMenuCursor = 0;
+        statusMessage = "";
         pendingKey = "";
         redraw();
         return;
@@ -822,20 +917,16 @@ async function runInteractiveSelector(initialRepos, initialQuery = "", ideConfig
       }
 
       if (parsedCommand.type === "open") {
-        try {
-          openRepoInIde(parsedCommand.target, ideConfig);
-          statusMessage = ideConfig
-            ? `Opened ${parsedCommand.target.name} in ${ideConfig.command}`
-            : "IDE is not configured";
-        } catch (error) {
-          statusMessage = error.message;
-        }
+        actionMenuOpen = true;
+        actionMenuCursor = 0;
+        statusMessage = "";
         return "open";
       }
 
       if (parsedCommand.type === "delete") {
         confirmDelete = {
           targets: parsedCommand.targets,
+          selected: 0,
         };
         searchMode = false;
         statusMessage = "";
@@ -875,14 +966,107 @@ function renderControlLine(query, searchMode, resultCount, commandQuery, command
   return `  ${label} ${searchField}  ${jumpLabel} ${jumpField}  ${meta}`;
 }
 
+function renderActionMenuPopup(terminalRows, terminalCols, focusedIndex) {
+  const boxWidth = 33;
+  const items = ACTION_MENU_ITEMS;
+  const boxHeight = items.length + 5;
+  const startRow = Math.max(1, Math.floor((terminalRows - boxHeight) / 2));
+  const startCol = Math.max(1, Math.floor((terminalCols - boxWidth) / 2));
+
+  const bgPopup = "\x1b[48;5;237m";
+  const bgFocused = "\x1b[48;5;31m";
+  const fgBorder = "\x1b[38;5;245m";
+  const fgTitle = "\x1b[38;5;117m";
+  const fgKey = "\x1b[38;5;117m";
+  const fgLabel = "\x1b[38;5;255m";
+  const fgHint = "\x1b[38;5;245m";
+
+  const inner = boxWidth - 2;
+  const moveTo = (row, col) => `\x1b[${row};${col}H`;
+  const lines = [];
+
+  lines.push(`${moveTo(startRow, startCol)}${bgPopup}${fgBorder}┌${"─".repeat(inner)}┐${ANSI.reset}`);
+
+  const titleText = " ACTIONS";
+  const titlePad = inner - stringDisplayWidth(titleText);
+  lines.push(`${moveTo(startRow + 1, startCol)}${bgPopup}${fgBorder}│${fgTitle}${ANSI.bold}${titleText}${ANSI.reset}${bgPopup}${" ".repeat(titlePad)}${fgBorder}│${ANSI.reset}`);
+
+  lines.push(`${moveTo(startRow + 2, startCol)}${bgPopup}${fgBorder}│${" ".repeat(inner)}│${ANSI.reset}`);
+
+  for (let i = 0; i < items.length; i++) {
+    const item = items[i];
+    const row = startRow + 3 + i;
+    const focused = i === focusedIndex;
+    const bg = focused ? bgFocused : bgPopup;
+    const plainText = `  ${item.key}  ${item.label}`;
+    const pad = Math.max(0, inner - stringDisplayWidth(plainText));
+    lines.push(`${moveTo(row, startCol)}${bg}${fgBorder}│${fgKey}${ANSI.bold}  ${item.key}  ${ANSI.reset}${bg}${fgLabel}${item.label}${" ".repeat(pad)}${fgBorder}│${ANSI.reset}`);
+  }
+
+  const hintRow = startRow + 3 + items.length;
+  const hintText = "  Esc cancel";
+  const hintPad = inner - stringDisplayWidth(hintText);
+  lines.push(`${moveTo(hintRow, startCol)}${bgPopup}${fgBorder}│${fgHint}${hintText}${" ".repeat(hintPad)}│${ANSI.reset}`);
+
+  lines.push(`${moveTo(hintRow + 1, startCol)}${bgPopup}${fgBorder}└${"─".repeat(inner)}┘${ANSI.reset}`);
+
+  return lines.join("");
+}
+
+function renderConfirmDeletePopup(confirmDelete, terminalRows, terminalCols) {
+  const targets = confirmDelete.targets;
+  const selected = confirmDelete.selected;
+  const label = formatDeleteTargetLabel(targets);
+  const message = `Remove ${label}?`;
+
+  const boxWidth = Math.max(33, stringDisplayWidth(message) + 6);
+  const inner = boxWidth - 2;
+  const boxHeight = 7;
+  const startRow = Math.max(1, Math.floor((terminalRows - boxHeight) / 2));
+  const startCol = Math.max(1, Math.floor((terminalCols - boxWidth) / 2));
+
+  const bgPopup = "\x1b[48;5;237m";
+  const bgSelected = ANSI.bgFocus;
+  const bgNo = selected === 0 ? bgSelected : bgPopup;
+  const bgYes = selected === 1 ? bgSelected : bgPopup;
+  const fgBorder = "\x1b[38;5;245m";
+  const fgTitle = "\x1b[38;5;224m";
+  const fgBtn = "\x1b[38;5;255m";
+
+  const moveTo = (row, col) => `\x1b[${row};${col}H`;
+  const lines = [];
+
+  lines.push(`${moveTo(startRow, startCol)}${bgPopup}${fgBorder}┌${"─".repeat(inner)}┐${ANSI.reset}`);
+
+  const titleText = ` ${message}`;
+  const titlePad = Math.max(0, inner - stringDisplayWidth(titleText));
+  lines.push(`${moveTo(startRow + 1, startCol)}${bgPopup}${fgBorder}│${fgTitle}${ANSI.bold}${titleText}${ANSI.reset}${bgPopup}${" ".repeat(titlePad)}${fgBorder}│${ANSI.reset}`);
+
+  lines.push(`${moveTo(startRow + 2, startCol)}${bgPopup}${fgBorder}│${" ".repeat(inner)}│${ANSI.reset}`);
+
+  const noBtn = `${bgNo}${fgBtn}${ANSI.bold}  No  ${ANSI.reset}`;
+  const yesBtn = `${bgYes}${fgBtn}${ANSI.bold}  Yes  ${ANSI.reset}`;
+  const btnGap = "    ";
+  const btnPlain = "  No      Yes  ";
+  const btnPad = Math.max(0, inner - stringDisplayWidth(btnPlain));
+  const leftPad = Math.floor(btnPad / 2);
+  const rightPad = btnPad - leftPad;
+  lines.push(`${moveTo(startRow + 3, startCol)}${bgPopup}${fgBorder}│${" ".repeat(leftPad)}${noBtn}${bgPopup}${btnGap}${yesBtn}${bgPopup}${" ".repeat(rightPad)}${fgBorder}│${ANSI.reset}`);
+
+  lines.push(`${moveTo(startRow + 4, startCol)}${bgPopup}${fgBorder}│${" ".repeat(inner)}│${ANSI.reset}`);
+
+  const hintText = "  ←/→ move · Enter confirm · Esc cancel";
+  const hintPad = Math.max(0, inner - stringDisplayWidth(hintText));
+  const fgHint = "\x1b[38;5;245m";
+  lines.push(`${moveTo(startRow + 5, startCol)}${bgPopup}${fgBorder}│${fgHint}${truncateText(hintText, inner)}${" ".repeat(hintPad)}│${ANSI.reset}`);
+
+  lines.push(`${moveTo(startRow + 6, startCol)}${bgPopup}${fgBorder}└${"─".repeat(inner)}┘${ANSI.reset}`);
+
+  return lines.join("");
+}
+
 function renderStatusLine(repos, cursor, visualAnchor, confirmDelete, statusMessage, terminalWidth) {
   const lineWidth = Math.max(72, terminalWidth - 4);
-
-  if (confirmDelete && confirmDelete.targets.length > 0) {
-    const label = formatDeleteTargetLabel(confirmDelete.targets);
-    const text = truncateText(`Remove ${label}? Backspace or Enter to confirm, Esc to cancel.`, lineWidth);
-    return `  ${ANSI.bgDanger}${ANSI.fgDanger}${ANSI.bold} ${text.padEnd(lineWidth, " ")} ${ANSI.reset}`;
-  }
 
   if (visualAnchor != null) {
     const selectedCount = getSelectedRepos(repos, cursor, visualAnchor).length;
@@ -1066,6 +1250,38 @@ function openRepoInIde(repo, ideConfig) {
     stdio: "ignore",
   });
 
+  child.unref();
+}
+
+function openInCmuxSurface(command, repoPath) {
+  const result = spawnSync("cmux", ["new-surface"], {
+    encoding: "utf8",
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+  if (result.error || result.status !== 0) {
+    throw new Error("failed to create cmux surface");
+  }
+
+  const surfaceMatch = result.stdout.match(/surface:\d+/);
+  if (!surfaceMatch) {
+    throw new Error("failed to parse cmux surface id");
+  }
+
+  const surfaceId = surfaceMatch[0];
+  const sendResult = spawnSync("cmux", ["send", "--surface", surfaceId, `cd ${repoPath} && ${command}\n`], {
+    encoding: "utf8",
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+  if (sendResult.error || sendResult.status !== 0) {
+    throw new Error(`failed to send command to cmux surface: ${sendResult.stderr || ""}`);
+  }
+}
+
+function openInBrowser(url) {
+  const child = spawn("open", [url], {
+    detached: true,
+    stdio: "ignore",
+  });
   child.unref();
 }
 
