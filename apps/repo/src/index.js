@@ -1364,21 +1364,24 @@ function renderInteractiveRows(allRepos, repos, start, cursor, visualAnchor, pin
     const focused = actualIndex === cursor;
     const selected = isSelectedIndex(actualIndex, cursor, visualAnchor);
     const pinned = isRepoPinned(repo, pinnedSlugs);
-    const pinMark = pinned ? `${ANSI.fgAccent}◆${ANSI.reset}` : " ";
-    const stylePrefix = focused
+    const bgStyle = focused
       ? `${ANSI.bgFocus}${ANSI.fgFocus}`
       : selected
         ? `${ANSI.bgSelection}${ANSI.fgSelection}`
         : repo.archived
           ? ANSI.dim
           : "";
-    const styleSuffix = stylePrefix ? ANSI.reset : "";
+    const hasBg = Boolean(bgStyle);
+    const pinMark = pinned
+      ? (hasBg ? `${ANSI.fgAccent}◆${ANSI.reset}${bgStyle}` : `${ANSI.fgAccent}◆${ANSI.reset}`)
+      : " ";
+    const styleSuffix = hasBg ? ANSI.reset : "";
     const indexCell = padCell(String(actualIndex + 1), indexWidth, "left");
     const nameCell = padCell(repo.name, nameWidth);
     const typeCell = padCell(getRepoTypeLabel(repo), typeWidth);
     const refCell = padCell(getRepoRefLabel(repo), refWidth);
     const branchCell = padCell(repo.branch, branchWidth);
-    const row = `${stylePrefix} ${styleSuffix}${pinMark}${stylePrefix} ${indexCell} ${nameCell}${" ".repeat(primaryGap)}${typeCell}${" ".repeat(secondaryGap)}${refCell}${" ".repeat(tertiaryGap)}${branchCell}${styleSuffix}`;
+    const row = `${bgStyle} ${pinMark}${hasBg && !pinned ? "" : bgStyle} ${indexCell} ${nameCell}${" ".repeat(primaryGap)}${typeCell}${" ".repeat(secondaryGap)}${refCell}${" ".repeat(tertiaryGap)}${branchCell}${styleSuffix}`;
 
     return row;
   });
