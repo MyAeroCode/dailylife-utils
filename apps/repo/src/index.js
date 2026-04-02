@@ -1318,7 +1318,7 @@ function renderInteractiveRows(allRepos, repos, start, cursor, visualAnchor, ter
 
 function getRepoTypeLabel(repo) {
   if (repo.archived) {
-    return isWorktreeRepo(repo) ? "wt·arch" : "archived";
+    return "archived";
   }
   return isWorktreeRepo(repo) ? "worktree" : "repo";
 }
